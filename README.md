@@ -42,10 +42,13 @@ or `{"mode": "curve"}`.
 ## Install
 
 On a computer that's always on, on the same network as Homey (a Raspberry Pi
-or a small Linux server). Needs Python 3.10 or newer.
+or a small Linux server). Needs Python 3.10 or newer, and access to the
+repository https://github.com/Xibel/WeHeat-Control (it's private: ask to be
+added as a collaborator).
 
 ```sh
-git clone <this repository> weheat-control     # or copy the folder
+git clone git@github.com:Xibel/WeHeat-Control.git weheat-control
+# or: git clone https://github.com/Xibel/WeHeat-Control.git weheat-control
 cd weheat-control
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
