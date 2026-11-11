@@ -1,5 +1,7 @@
 # WeHeat-Control
 
+*English | [Nederlands](README.nl.md)*
+
 Switch a **Weheat** heat pump between its **heating curve** and **OpenTherm**
 from **Homey** (or the command line), on your own network.
 
