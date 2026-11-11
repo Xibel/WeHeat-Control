@@ -1,0 +1,6 @@
+# your login and tokens: never commit
+config.json
+state.json
+state.json.tmp
+.venv/
+__pycache__/
