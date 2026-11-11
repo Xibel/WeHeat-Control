@@ -3,6 +3,39 @@
 Switch a **Weheat** heat pump between its **heating curve** and **OpenTherm**
 from **Homey** (or the command line), on your own network.
 
+## Why would you want this?
+
+**A Weheat heat pump has no real off switch.** On its heating curve it keeps
+making heat whenever the outside temperature asks for it, whatever
+electricity costs at that moment.
+
+That matters with a **dynamic energy contract**, where the price changes every
+hour. On a cold winter evening a few hours can cost several times the
+average, and those are often exactly the hours the heat pump runs hardest. A
+well-insulated house can easily coast through a few hours without heating, so
+you'd rather stop the pump then and heat when electricity is cheap again.
+
+The trick, if you have an **OpenTherm room thermostat** connected to the heat
+pump:
+
+1. **Normally** the pump runs on its **heating curve**.
+2. **Before the expensive hours**, switch it to **OpenTherm**: now the
+   thermostat decides. Set the thermostat to a **very low temperature** and it
+   tells the heat pump there's no heat needed, so the pump stops heating.
+3. **When prices are back to normal**, switch it back to the **heating
+   curve**. WeHeat-Control puts back exactly the curve you had.
+
+WeHeat-Control does steps 2 and 3 on a single call from Homey, so a Homey flow
+can do it automatically, for example on a price trigger from your energy
+supplier's app. (Turning the thermostat down and up is up to you or your
+Homey flow; this script only switches the heat pump's control mode.)
+
+Weheat is working on smarter control of its own ("Weheat Intelligence").
+Until that's available, this trick lets you turn the heat pump off during
+expensive hours.
+
+## The two modes
+
 | Mode | What the pump does |
 |---|---|
 | `curve` | Runs on its **heating curve**: the water temperature follows the outside temperature (ControlMethod 1). Going back to `curve` puts back exactly the curve points it had before. |
