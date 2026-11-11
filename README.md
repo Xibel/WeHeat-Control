@@ -218,3 +218,23 @@ WantedBy=multi-user.target
 sudo systemctl enable --now weheat-control
 journalctl -u weheat-control -f        # every switch is logged
 ```
+
+## Disclaimer
+
+WeHeat-Control is a personal project. It isn't made, supported or endorsed
+by Weheat. It uses Weheat's portal API, which isn't a public API, so it can
+stop working whenever Weheat changes something, and using it may not be
+what Weheat intends.
+
+You use it **at your own risk**. It only switches the heat pump between two
+modes Weheat itself offers, but you're responsible for how you use it:
+check that your house stays warm enough, that the pump goes back to its
+heating curve, and that the result is what you expect. The author can't be
+held responsible for any damage, costs or other consequences of using this
+software, such as a cold house, a missed switch back, higher energy costs or
+problems with your Weheat account or warranty.
+
+## License
+
+MIT, see [LICENSE](LICENSE): free to use, change and share, provided "as is",
+without warranty or liability.
