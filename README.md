@@ -108,8 +108,29 @@ Answers are JSON, for example
 A wrong body gives HTTP 400; a problem with Weheat gives HTTP 502 with
 `{"error": "..."}`.
 
-With an `api_token` set, send it as the header `Authorization: Bearer <token>`
-or add `?token=<token>` to the address.
+### The API token
+
+The `api_token` is only between Homey and this script. Weheat never sees it.
+
+- **What it is:** a made-up shared password, `api_token` in `config.json`.
+  The script checks it on every request. Without it, or with a wrong one, it
+  answers 401 and changes nothing. Only `GET /api/health` works without it.
+- **Why:** without it, anyone on the network who knows the address could
+  switch the heat pump.
+- **Where it goes:** put the same value in the Homey flow, as the header
+  `Authorization: Bearer <api_token>`, or as `?token=<api_token>` at the end
+  of the address (for cards that can't set headers).
+- **Separate from the Weheat login:** the script logs in to Weheat by itself
+  with the `username` and `password` in `config.json`, and keeps that Weheat
+  token to itself. Homey never needs your Weheat password.
+- **Leaving it empty** turns the check off: the script logs a warning at
+  start-up, and anyone on the network can switch the pump. Not recommended.
+
+Make up your own long random text, for example:
+
+```sh
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+```
 
 ### In Homey
 
