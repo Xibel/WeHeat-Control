@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
 WeHeat-Control: switch a Weheat heat pump between its heating curve
-(ControlMethod 1), OpenTherm (ControlMethod 4) and "off" (OpenTherm plus a
-setting that stops heating), from the command line or from Homey through a
-small HTTP API on your own network. Experimental: it uses the API Weheat's own
+(ControlMethod 1) and OpenTherm (ControlMethod 4), from the command line or
+from Homey through a small HTTP API on your own network. Experimental: it uses the API Weheat's own
 portal uses (https://api.weheat.nl/api/v1), which isn't a documented public API.
 
 Commands (see README.md):
   python weheat_control.py login            log in and show who you are
   python weheat_control.py find             look for your installation and control board
   python weheat_control.py status [--raw]   control method, curve, what's remembered
-  python weheat_control.py save             remember the curve (and the other settings modes change)
-  python weheat_control.py mode <name>      switch: curve | opentherm | off   (--dry-run: only show)
-  python weheat_control.py serve            the HTTP API for Homey: POST /api/mode/<name>
+  python weheat_control.py save             remember the curve now
+  python weheat_control.py mode <name>      switch: curve | opentherm   (--dry-run: only show)
+  python weheat_control.py serve            the HTTP API for Homey: POST /api/mode {"mode": ...}
 
 Settings in config.json (copy config.example.json). Tokens, ids and what to
 put back go in state.json. Neither file is ever printed; keep both private.
@@ -259,43 +258,19 @@ def summary(settings) -> dict:
 
 
 # ── modes ────────────────────────────────────────────────────────────────────
-# A mode is a set of settings to PATCH. "curve" is special: it puts back what
-# was there before we left the heating curve (the curve points and every other
-# setting a mode changed). The others come from config.json "modes".
-DEFAULT_MODES = {
-    "opentherm": {"ControlMethod": OPENTHERM},
-    # "off": OpenTherm plus a setting that stops heating; which one, and its
-    # value, is set in config.json once known (see README, "The off mode")
-}
-
-
-def modes(cfg) -> dict:
-    m = dict(DEFAULT_MODES)
-    m.update(cfg.get("modes") or {})
-    return {k: v for k, v in m.items() if v}   # an empty mode = not configured
-
-
-def touched_keys(cfg) -> set:
-    """Every setting any mode changes: what has to be put back with the curve."""
-    keys = {"ControlMethod", "HeatingCurveY"}
-    for v in modes(cfg).values():
-        keys.update(v)
-    return keys
+# Two modes. "opentherm" sends ControlMethod 4; "curve" puts back what was
+# there before we left the heating curve: ControlMethod 1 and the curve points.
+MODES = ("curve", "opentherm")
+OPENTHERM_SETTINGS = {"ControlMethod": OPENTHERM}
 
 
 def remember_baseline(cfg, settings=None):
-    """While the pump is on its heating curve: save the current value of every
-    setting a mode can change (and the curve points), to put back later."""
+    """While the pump is on its heating curve: save the curve points, to put back later."""
     settings = settings or read_settings(cfg)
-    if summary(settings)["control_method"] != HEATING_CURVE:
+    s = summary(settings)
+    if s["control_method"] != HEATING_CURVE or not s["heating_curve_y"]:
         return None
-    base = {}
-    for k in sorted(touched_keys(cfg)):
-        v = _find_key(settings, (k, k[:1].lower() + k[1:]))
-        if v is not None:
-            base[k] = v
-    if not base.get("HeatingCurveY"):
-        return None
+    base = {"HeatingCurveY": s["heating_curve_y"]}
     st = load_state(cfg)
     st["baseline"] = {"settings": base, "saved_at": datetime.now().isoformat(timespec="seconds")}
     save_state(cfg, st)
@@ -303,9 +278,9 @@ def remember_baseline(cfg, settings=None):
 
 
 def set_mode(cfg, name: str, dry_run=False) -> dict:
-    """Switch to a mode: curve, opentherm, off (or any mode in config.json)."""
-    if name != "curve" and not modes(cfg).get(name):
-        raise RuntimeError(f"Unknown or unconfigured mode '{name}' (modes: curve, {', '.join(modes(cfg))}).")
+    """Switch to a mode: 'curve' or 'opentherm'."""
+    if name not in MODES:
+        raise RuntimeError(f"Unknown mode '{name}': use 'curve' or 'opentherm'.")
     settings = read_settings(cfg)
     now = summary(settings)
     if name == "curve":
@@ -317,16 +292,13 @@ def set_mode(cfg, name: str, dry_run=False) -> dict:
             raise RuntimeError("Nothing remembered to put back: run 'save' while the pump is on its heating curve.")
         want = dict(base, ControlMethod=HEATING_CURVE)
     else:
-        target = modes(cfg).get(name)
-        if not target:
-            raise RuntimeError(f"Unknown or unconfigured mode '{name}' (modes: curve, {', '.join(modes(cfg))}).")
         # leaving the curve: remember what to put back first, and refuse if we can't
         if now["control_method"] == HEATING_CURVE:
             if remember_baseline(cfg, settings) is None:
                 raise RuntimeError("Not switching: couldn't read the current curve, so it couldn't be put back later.")
         elif not load_state(cfg).get("baseline"):
             raise RuntimeError("Not switching: nothing remembered to put back later (run 'save' while on the curve).")
-        want = dict(target)
+        want = dict(OPENTHERM_SETTINGS)
     # only what differs from now
     diff = {k: v for k, v in want.items() if _find_key(settings, (k, k[:1].lower() + k[1:])) != v}
     if not diff:
@@ -360,7 +332,7 @@ def patch(cfg, settings: dict, dry_run=False) -> dict:
 def status(cfg) -> dict:
     st = load_state(cfg)
     return {**summary(read_settings(cfg)), "last_mode": st.get("mode"),
-            "remembered": st.get("baseline"), "modes": ["curve", *modes(cfg)]}
+            "remembered": st.get("baseline"), "modes": list(MODES)}
 
 
 # ── finding the installation and control board ──────────────────────────────
@@ -408,7 +380,7 @@ def find(cfg) -> dict:
 
 
 # ── HTTP API for Homey ───────────────────────────────────────────────────────
-# Like EnergyBrain's SMA control: Homey POSTs /api/mode/<name>.
+# Like EnergyBrain's SMA control: Homey POSTs /api/mode with {"mode": "curve" | "opentherm"}.
 def serve(cfg):
     host, port = cfg.get("api_host", "0.0.0.0"), int(cfg.get("api_port", 8095))
     secret = cfg.get("api_token") or ""
@@ -440,9 +412,16 @@ def serve(cfg):
             try:
                 if method == "GET" and path == "/api/mode":
                     return self._send(200, status(cfg))
-                if method == "POST" and path.startswith("/api/mode/"):
-                    return self._send(200, set_mode(cfg, path.rsplit("/", 1)[1]))
-                return self._send(404, {"error": "use GET /api/mode or POST /api/mode/<curve|opentherm|off>"})
+                if method == "POST" and path == "/api/mode":
+                    try:
+                        n = int(self.headers.get("Content-Length") or 0)
+                        mode = (json.loads(self.rfile.read(n) or b"{}") or {}).get("mode")
+                    except (ValueError, AttributeError):
+                        return self._send(400, {"error": 'send JSON like {"mode": "opentherm"}'})
+                    if mode not in MODES:
+                        return self._send(400, {"error": 'send {"mode": "curve"} or {"mode": "opentherm"}'})
+                    return self._send(200, set_mode(cfg, mode))
+                return self._send(404, {"error": 'use GET /api/mode, or POST /api/mode with {"mode": "curve" | "opentherm"}'})
             except Exception as e:
                 log(f"{method} {path}: {e}")
                 return self._send(502, {"error": str(e)})
@@ -456,15 +435,15 @@ def serve(cfg):
         def log_message(self, fmt, *args):   # keep tokens in query strings out of the log
             log(f"{self.client_address[0]} {self.command} {urlparse(self.path).path}")
 
-    log(f"WeHeat-Control API on http://{host}:{port}  (GET /api/mode, POST /api/mode/<{'|'.join(['curve', *modes(cfg)])}>)")
+    log(f"WeHeat-Control API on http://{host}:{port}  (GET /api/mode, POST /api/mode {{\"mode\": \"curve\" | \"opentherm\"}})")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
 # ── command line ─────────────────────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description="Switch a Weheat heat pump between its heating curve, OpenTherm and off.")
+    p = argparse.ArgumentParser(description="Switch a Weheat heat pump between its heating curve and OpenTherm.")
     p.add_argument("command", help="login | find | status | save | mode | serve")
-    p.add_argument("mode", nargs="?", help="with 'mode': curve, opentherm, off (or a mode from config.json)")
+    p.add_argument("mode", nargs="?", choices=MODES, help="with 'mode': curve or opentherm")
     p.add_argument("--dry-run", action="store_true", help="mode: only show what would be sent")
     p.add_argument("--raw", action="store_true", help="status: print the whole settings answer")
     a = p.parse_args()
@@ -484,7 +463,7 @@ def main():
             print(f"Remembered: {b}" if b else "Not on the heating curve now: nothing saved.")
         elif a.command == "mode":
             if not a.mode:
-                sys.exit("Which mode? curve, " + ", ".join(modes(cfg)))
+                sys.exit("Which mode? curve or opentherm")
             print(json.dumps(set_mode(cfg, a.mode, a.dry_run), indent=2))
         elif a.command == "serve":
             serve(cfg)
