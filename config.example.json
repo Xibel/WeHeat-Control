@@ -5,11 +5,16 @@
   "installation_id": "",
   "control_board_id": "",
 
+  "modes": {
+    "opentherm": {"ControlMethod": 4},
+    "off": {}
+  },
+
   "update_immediately": false,
 
   "api_host": "0.0.0.0",
   "api_port": 8095,
-  "api_token": "make-up-a-long-random-text",
+  "api_token": "",
 
   "state_file": "state.json"
 }
