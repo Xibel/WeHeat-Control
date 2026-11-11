@@ -27,9 +27,14 @@ import requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.environ.get("WEHEAT_CONTROL_CONFIG", os.path.join(HERE, "config.json"))
 
-# Weheat's login (Keycloak). The portal's own client needs a secret, so we use
-# the public client of Weheat's third-party API debugger page, with the same
-# login flow a browser does (authorization code + PKCE).
+# Weheat's login (Keycloak). Two ways in, both the way a browser does it:
+# - the portal (portal.weheat.nl, NextAuth with client "weheat-portal"): its
+#   session holds the token the portal itself uses for /api/v1 (settings);
+#   Weheat refuses /api/v1 for third-party tokens ("not available for
+#   third-party API clients"), so settings need this one;
+# - the public client of Weheat's third-party API debugger page (authorization
+#   code + PKCE): for the read-only third-party API (finding the heat pump).
+PORTAL = "https://portal.weheat.nl"
 AUTH = "https://auth.weheat.nl/auth/realms/Weheat/protocol/openid-connect"
 CLIENT_ID = "weheat-third-party-debugger"
 REDIRECT_URI = "https://api.weheat.nl/third_party/api/debugger"
@@ -133,6 +138,79 @@ def _tokens_from(resp_json: dict) -> dict:
             if resp_json.get("refresh_expires_in") else None}
 
 
+def _post_credentials(s: requests.Session, login_page: requests.Response, cfg, expect: str) -> str:
+    """On Weheat's login page: post username and password; return the redirect
+    address (must start with `expect`), not followed."""
+    action, fields = _login_action(login_page.text)
+    if not action:
+        raise RuntimeError("Weheat's login page has no login address (did the page change?)")
+    data = dict(fields, username=cfg["username"], password=cfg["password"], credentialId="")
+    r = s.post(urljoin(login_page.url, action), data=data, timeout=30, allow_redirects=False)
+    loc = r.headers.get("Location", "")
+    if r.status_code not in (302, 303) or not loc.startswith(expect):
+        why = _login_message(r.text)
+        raise RuntimeError("Login failed" + (f": {why}" if why else
+                           f" (HTTP {r.status_code}; log in once in a browser at {PORTAL} to see why)"))
+    return loc
+
+
+def portal_login(cfg) -> dict:
+    """Log in to portal.weheat.nl like a browser (NextAuth + Keycloak); returns
+    the portal's session cookies."""
+    s = requests.Session()
+    s.headers["User-Agent"] = UA
+    r = s.get(f"{PORTAL}/api/auth/csrf", timeout=30)
+    r.raise_for_status()
+    csrf = r.json()["csrfToken"]
+    r = s.post(f"{PORTAL}/api/auth/signin/keycloak", timeout=30, allow_redirects=False,
+               data={"csrfToken": csrf, "callbackUrl": f"{PORTAL}/", "json": "true"})
+    url = r.headers.get("Location") or (r.json().get("url") if r.headers.get("content-type", "").startswith("application/json") else None)
+    if not url or "auth.weheat.nl" not in url:
+        raise RuntimeError(f"Portal sign-in didn't lead to Weheat's login (HTTP {r.status_code})")
+    page = s.get(url, timeout=30)
+    page.raise_for_status()
+    callback = _post_credentials(s, page, cfg, f"{PORTAL}/api/auth/callback/")
+    r = s.get(callback, timeout=30, allow_redirects=False)   # sets the session cookie
+    if r.status_code >= 400:
+        raise RuntimeError(f"Portal callback failed: HTTP {r.status_code}")
+    cookies = {c.name: c.value for c in s.cookies if c.domain.endswith("portal.weheat.nl")}
+    if not any("session-token" in n for n in cookies):
+        raise RuntimeError("Portal login: no session cookie")
+    return cookies
+
+
+def portal_token(cfg, force_login=False) -> str:
+    """The access token from the portal's session; a new portal login when the
+    session is gone or its token has expired."""
+    with _lock:
+        st = load_state(cfg)
+        p = st.get("portal") or {}
+        now = time.time()
+        if not force_login and p.get("access_token") and p.get("access_expires", 0) > now:
+            return p["access_token"]
+        tok = None
+        for attempt in (0, 1):
+            if attempt or force_login or not p.get("cookies"):
+                p = {"cookies": portal_login(cfg)}
+                log("Logged in to the Weheat portal.")
+            r = requests.get(f"{PORTAL}/api/auth/session", cookies=p["cookies"], timeout=30,
+                             headers={"User-Agent": UA, "Accept": "application/json"})
+            sess = r.json() if r.ok and r.text.strip().startswith("{") else {}
+            tok = sess.get("accessToken")
+            exp = jwt_claims(tok).get("exp", 0) if tok else 0
+            if tok and exp > now + 30:
+                # the session may have renewed its cookie
+                p["cookies"].update({k: v for k, v in r.cookies.items()})
+                break
+            tok = None
+        if not tok:
+            raise RuntimeError("The portal session has no access token")
+        p.update(access_token=tok, access_expires=exp - 30)
+        st["portal"] = p
+        save_state(cfg, st)
+        return tok
+
+
 def login(cfg) -> dict:
     """Log in like a browser: login page, post the form, catch the code at the
     redirect address (not followed), exchange it for tokens."""
@@ -145,18 +223,9 @@ def login(cfg) -> dict:
         "response_type": "code", "client_id": CLIENT_ID, "redirect_uri": REDIRECT_URI,
         "scope": "openid", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
     r.raise_for_status()
-    action, fields = _login_action(r.text)
-    if not action:
-        raise RuntimeError("Weheat's login page has no login address (did the page change?)")
-    data = dict(fields, username=cfg["username"], password=cfg["password"], credentialId="")
-    r = s.post(urljoin(r.url, action), data=data, timeout=30, allow_redirects=False)
     # Keycloak answers with a redirect to REDIRECT_URI?code=...; anything else is
     # the login page again (wrong password) or an extra step (terms, new password)
-    loc = r.headers.get("Location", "")
-    if r.status_code not in (302, 303) or not loc.startswith(REDIRECT_URI):
-        why = _login_message(r.text)
-        raise RuntimeError("Login failed" + (f": {why}" if why else
-                           f" (HTTP {r.status_code}; log in once in a browser at {REDIRECT_URI} to see why)"))
+    loc = _post_credentials(s, r, cfg, REDIRECT_URI)
     q = parse_qs(urlparse(loc).query)
     if q.get("state", [""])[0] != state or "code" not in q:
         raise RuntimeError("Login: no code in Weheat's answer")
@@ -200,8 +269,11 @@ def jwt_claims(tok: str) -> dict:
 
 # ── API ──────────────────────────────────────────────────────────────────────
 def call(cfg, method: str, url: str, body=None) -> requests.Response:
+    """The third-party API with the debugger token, everything else (/api/v1)
+    with the portal's token; once more with a fresh login after a 401."""
+    get_token = access_token if url.startswith(THIRD_PARTY) else portal_token
     for attempt in (0, 1):
-        tok = access_token(cfg, force_login=attempt == 1)
+        tok = get_token(cfg, force_login=attempt == 1)
         r = requests.request(method, url, json=body, timeout=30, headers={
             "Authorization": f"Bearer {tok}", "Accept": "application/json", "User-Agent": UA})
         if r.status_code != 401:
@@ -450,9 +522,10 @@ def main():
     cfg = load_config()
     try:
         if a.command == "login":
-            claims = jwt_claims(access_token(cfg, force_login=True))
-            print(f"Logged in as {claims.get('preferred_username') or claims.get('email') or '?'}; "
-                  f"token valid until {datetime.fromtimestamp(claims.get('exp', 0)):%H:%M:%S}")
+            for name, fn in (("portal", portal_token), ("third-party API", access_token)):
+                claims = jwt_claims(fn(cfg, force_login=True))
+                print(f"{name}: logged in as {claims.get('preferred_username') or claims.get('email') or '?'} "
+                      f"(client {claims.get('azp')}); token valid until {datetime.fromtimestamp(claims.get('exp', 0)):%H:%M:%S}")
         elif a.command == "find":
             found = find(cfg)
             print("\nSaved in state.json:" if found else "\nNothing saved; put the ids in config.json yourself.", found or "")

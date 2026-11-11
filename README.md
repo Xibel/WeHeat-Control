@@ -18,10 +18,14 @@ or `{"mode": "curve"}`.
 
 ## How it works
 
-1. **Login.** It logs in to Weheat (Keycloak at `auth.weheat.nl`) with your
-   own Weheat username and password, the way a browser does: the login page,
-   your username and password, then a short-lived token (about 5 minutes). It
-   renews the token itself, and logs in again when it has to.
+1. **Login.** It logs in to the Weheat portal (`portal.weheat.nl`) with your
+   own Weheat username and password, the way a browser does: the portal's
+   sign-in, Weheat's login page (`auth.weheat.nl`), back to the portal, and
+   then the portal session's token (about 5 minutes; renewed by itself, a new
+   login when needed). Weheat's settings API only accepts the portal's own
+   token: a token from the official third-party API gets *"This endpoint is
+   not available for third-party API clients"*. (That official API is
+   read-only; `find` also uses it.)
 2. **Read.** `GET /api/v1/installations/<installation>/settings` returns the
    pump's settings, including `ControlMethod` (`1` = heating curve, `4` =
    OpenTherm) and `HeatingCurveY` (the curve points).
